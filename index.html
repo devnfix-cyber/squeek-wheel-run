@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squeek Wheel Run — MVP</title>
+<style>
+  body{font-family:system-ui,Arial,sans-serif;background:#0b0f14;color:#e8eef4;margin:0;padding:16px}
+  h1{margin:0 0 4px} p{color:#b8c4d0}
+  .box{background:#141c26;border:1px solid #26344a;border-radius:12px;padding:12px;margin:12px 0}
+  canvas{background:#0e2a2b;border-radius:10px;width:100%;max-width:800px;display:block}
+  button{padding:10px 16px;border-radius:8px;border:0;background:#f2b134;color:#111;font-weight:700;cursor:pointer;margin:4px}
+  button.secondary{background:#24344a;color:#fff}
+  button:disabled{opacity:.5}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .stat{font-size:20px;font-weight:700}
+  small{color:#93a3b3}
+</style>
+</head>
+<body>
+<h1>🐹 Squeek Wheel Run</h1>
+<p>MVP game browser single-player. Karakter hamster orisinal yang digambar dari kode (bukan aset/logo resmi Squeekchain). Tanpa wallet, tanpa token, tanpa janji hadiah.</p>
+
+<div class="box" id="live">
+  <strong>Panel live Squeekchain (API publik)</strong><br>
+  Status API: <span id="apiStatus">memuat…</span><br>
+  Blok Squeek: <span id="blockHeight">–</span> · Ronde tersettle: <span id="settledRound">–</span> ·
+  Kerja kumulatif: <span id="work">–</span> · Status core: <span id="coreStatus">–</span><br>
+  <small>Data diambil dari https://api.squeekchain.com/v1/status setiap 15 detik. Kalau API tidak bisa dijangkau, game tetap bisa dimainkan dalam mode lokal dan panel akan menulis “offline” — tidak ada angka live yang dikarang. Kenaikan blok yang terdeteksi memberi boost kecepatan singkat di game.</small>
+</div>
+
+<div class="box">
+  <div class="row">
+    <div>Jarak: <span class="stat" id="dist">0</span> m</div>
+    <div>Biji: <span class="stat" id="seeds">0</span></div>
+    <div>Skor: <span class="stat" id="score">0</span></div>
+    <div>Stamina: <span class="stat" id="stamina">100</span></div>
+    <div>Waktu ronde: <span class="stat" id="time">60</span> dtk</div>
+  </div>
+  <p>Pilih strategi, lalu tekan Mulai. Spasi / ketuk tombol Lompat untuk melompati rintangan tinggi, tombol Tunduk untuk melewati rintangan rendah.</p>
+  <div>
+    <button id="btnSprint">Sprint — cepat, stamina cepat habis</button>
+    <button id="btnJog" class="secondary">Jog — stabil (default)</button>
+    <button id="btnRest" class="secondary">Istirahat — lambat, stamina pulih</button>
+  </div>
+  <div>
+    <button id="btnStart">▶ Mulai ronde 60 detik</button>
+    <button id="btnJump" class="secondary">⬆ Lompat</button>
+    <button id="btnDuck" class="secondary">⬇ Tunduk</button>
+  </div>
+  <p id="msg">Siap. Pilih strategi lalu mulai.</p>
+</div>
+
+<canvas id="game" width="800" height="300"></canvas>
+
+<div class="box">
+  <strong>Papan skor lokal (perangkat ini saja, bukan papan global)</strong>
+  <ol id="board"></ol>
+  <small>Ronde MVP ini 60 detik agar bisa diuji cepat. Ini BUKAN ronde SqueekCore 10 menit — ronde SqueekCore hanya dipakai sebagai referensi live di panel (blok &amp; ronde tersettle). Versi Direct yang diajukan ke tim harus menjelaskan perbedaan ini dengan jujur, atau ronde game diubah mengikuti ronde nyata.</small>
+</div>
+
+<script>
+const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+let strategy = 'jog', running = false, timeLeft = 60, lastTick = 0;
+let dist = 0, seeds = 0, score = 0, stamina = 100;
+let hamster = {x: 90, y: 210, vy: 0, jumping: false, ducking: false};
+let obstacles = [], seedItems = [], spawnTimer = 0, boostUntil = 0, lastBlock = null;
+
+const SPEED = {sprint: 7.5, jog: 5, rest: 3.2};
+const DRAIN = {sprint: 0.35, jog: 0.12, rest: -0.25};
+
+function setStrategy(s, btn){
+  strategy = s;
+  document.querySelectorAll('#btnSprint,#btnJog,#btnRest').forEach(b=>b.classList.add('secondary'));
+  btn.classList.remove('secondary');
+  document.getElementById('msg').textContent = 'Strategi: ' + s + '. Tekan Mulai.';
+}
+document.getElementById('btnSprint').onclick = e => setStrategy('sprint', e.target);
+document.getElementById('btnJog').onclick = e => setStrategy('jog', e.target);
+document.getElementById('btnRest').onclick = e => setStrategy('rest', e.target);
+
+function jump(){ if(running && !hamster.jumping){ hamster.vy = -13; hamster.jumping = true; } }
+function duck(on){ if(running) hamster.ducking = on; }
+document.getElementById('btnJump').onclick = jump;
+document.getElementById('btnDuck').onmousedown = () => duck(true);
+document.getElementById('btnDuck').onmouseup = () => duck(false);
+document.addEventListener('keydown', e => {
+  if(e.code === 'Space' || e.code === 'ArrowUp'){ e.preventDefault(); jump(); }
+  if(e.code === 'ArrowDown' || e.code === 'KeyS') duck(true);
+});
+document.addEventListener('keyup', e => {
+  if(e.code === 'ArrowDown' || e.code === 'KeyS') duck(false);
+});
+cv.addEventListener('click', jump);
+
+document.getElementById('btnStart').onclick = () => {
+  running = true; timeLeft = 60; dist = 0; seeds = 0; score = 0; stamina = 100;
+  obstacles = []; seedItems = []; spawnTimer = 0; lastTick = performance.now();
+  document.getElementById('msg').textContent = 'Ronde berjalan! Hindari rintangan, kumpulkan biji.';
+  requestAnimationFrame(loop);
+};
+
+function drawHamster(){
+  const h = hamster.ducking ? 26 : 40;
+  const y = hamster.ducking ? hamster.y + 14 : hamster.y;
+  ctx.fillStyle = '#f2b134';
+  ctx.beginPath(); ctx.ellipse(hamster.x + 20, y, 26, h/2 + 8, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(hamster.x + 38, y - 12, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(hamster.x + 42, y - 14, 3, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#ff7a7a'; ctx.beginPath(); ctx.arc(hamster.x + 50, y - 8, 2.5, 0, Math.PI*2); ctx.fill();
+}
+function loop(now){
+  if(!running) return;
+  const dt = Math.min(50, now - lastTick); lastTick = now;
+  timeLeft -= dt/1000;
+  stamina = Math.max(0, Math.min(100, stamina - DRAIN[strategy] * (dt/16)));
+  let speed = SPEED[strategy] * (stamina <= 0 ? 0.4 : 1) * (Date.now() < boostUntil ? 1.25 : 1);
+  dist += speed * dt/16 * 0.6;
+  if(spawnTimer <= 0){
+    const tall = Math.random() < 0.5;
+    obstacles.push({x: 800, tall, w: 26, h: tall ? 46 : 22});
+    if(Math.random() < 0.7) seedItems.push({x: 820, y: 170 + Math.random()*50});
+    spawnTimer = 70 + Math.random()*70;
+  }
+  spawnTimer -= dt/16;
+  if(hamster.jumping){
+    hamster.vy += 0.7; hamster.y += hamster.vy;
+    if(hamster.y >= 210){ hamster.y = 210; hamster.vy = 0; hamster.jumping = false; }
+  }
+  obstacles.forEach(o => o.x -= speed);
+  seedItems.forEach(s => s.x -= speed);
+  obstacles = obstacles.filter(o => o.x > -40);
+  seedItems = seedItems.filter(s => s.x > -20);
+  // tabrakan & biji
+  obstacles.forEach(o => {
+    const oy = o.tall ? 250 - o.h : 250 - o.h;
+    const hx1 = hamster.x, hx2 = hamster.x + 46, hy1 = hamster.y - 20, hy2 = hamster.y + 20;
+    const ox1 = o.x, ox2 = o.x + o.w, oy1 = oy, oy2 = 250;
+    const hit = hx2 > ox1 && hx1 < ox2 && hy2 > oy1 && hy1 < oy2;
+    const avoided = (o.tall && hamster.jumping) || (!o.tall && hamster.ducking);
+    if(hit && !avoided && !o.counted){ o.counted = true; score = Math.max(0, score - 20); stamina = Math.max(0, stamina - 15); }
+  });
+  seedItems.forEach(s => {
+    if(!s.taken && Math.abs(s.x - (hamster.x+20)) < 30 && Math.abs(s.y - hamster.y) < 35){ s.taken = true; seeds++; }
+  });
+  seedItems = seedItems.filter(s => !s.taken);
+  score = Math.floor(dist) + seeds * 10 - (100 - Math.round(stamina)) * 0;
+  // gambar
+  ctx.clearRect(0, 0, 800, 300);
+  ctx.fillStyle = '#0e2a2b'; ctx.fillRect(0, 0, 800, 300);
+  ctx.fillStyle = '#1c4a3a'; ctx.fillRect(0, 250, 800, 50);
+  ctx.fillStyle = '#f2c14e';
+  seedItems.forEach(s => { ctx.beginPath(); ctx.arc(s.x, s.y, 8, 0, Math.PI*2); ctx.fill(); });
+  ctx.fillStyle = '#e74c3c';
+  obstacles.forEach(o => ctx.fillRect(o.x, 250 - o.h, o.w, o.h));
+  drawHamster();
+  document.getElementById('dist').textContent = Math.floor(dist);
+  document.getElementById('seeds').textContent = seeds;
+  document.getElementById('score').textContent = Math.max(0, score);
+  document.getElementById('stamina').textContent = Math.round(stamina);
+  document.getElementById('time').textContent = Math.max(0, Math.ceil(timeLeft));
+  if(timeLeft <= 0){
+    running = false;
+    const finalScore = Math.max(0, score);
+    document.getElementById('msg').textContent = 'Ronde selesai! Skor akhir: ' + finalScore + ' (jarak ' + Math.floor(dist) + ' m, ' + seeds + ' biji).';
+    saveScore(finalScore);
+  } else {
+    requestAnimationFrame(loop);
+  }
+}
+function saveScore(s){
+  try{
+    const key = 'wheelrun-board';
+    const list = JSON.parse(localStorage.getItem(key) || '[]');
+    list.push({score: s, date: new Date().toLocaleString('id-ID')});
+    list.sort((a,b) => b.score - a.score);
+    localStorage.setItem(key, JSON.stringify(list.slice(0,5)));
+    renderBoard();
+  }catch(e){}
+}
+function renderBoard(){
+  try{
+    const list = JSON.parse(localStorage.getItem('wheelrun-board') || '[]');
+    document.getElementById('board').innerHTML = list.length ? list.map(x => '<li>' + x.score + ' — ' + x.date + '</li>').join('') : '<li>Belum ada skor.</li>';
+  }catch(e){}
+}
+renderBoard();
+
+async function fetchLive(){
+  try{
+    const r = await fetch('https://api.squeekchain.com/v1/status');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const anchor = (j.builder && j.builder.anchor) || {};
+    const meas = j.measurement || {};
+    document.getElementById('apiStatus').textContent = 'live';
+    document.getElementById('blockHeight').textContent = anchor.blockHeight ?? '–';
+    document.getElementById('settledRound').textContent = anchor.settledThroughRound ?? '–';
+    document.getElementById('work').textContent = meas.cumulativeWorkUnits ?? '–';
+    document.getElementById('coreStatus').textContent = meas.coreStatus ?? '–';
+    if(lastBlock !== null && anchor.blockHeight && anchor.blockHeight > lastBlock){
+      boostUntil = Date.now() + 30000;
+      document.getElementById('msg').textContent = 'Blok Squeek baru terdeteksi — boost kecepatan 30 detik!';
+    }
+    if(anchor.blockHeight) lastBlock = anchor.blockHeight;
+  }catch(e){
+    document.getElementById('apiStatus').textContent = 'offline (mode lokal, angka live tidak ditampilkan)';
+  }
+}
+fetchLive(); setInterval(fetchLive, 15000);
+</script>
+</body>
+</html>
