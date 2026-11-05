@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Squeekchain Ping — approve(self, 0) on Sepolia</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+  code { word-break: break-all; background: #f2f2f2; padding: 2px 4px; border-radius: 4px; }
+  button { padding: 12px 20px; font-size: 16px; margin: 8px 8px 8px 0; cursor: pointer; }
+  #status { margin-top: 16px; white-space: pre-wrap; word-break: break-all; }
+  .warn { color: #a00; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>Squeekchain Ping (Sepolia)</h1>
+<p>This page sends <b>one</b> transaction from your own wallet, using the wallet
+extension already installed in this browser (Rabby / MetaMask). It never asks for a
+private key or seed phrase, and it sends nothing to any server — the only call is
+<code>eth_sendTransaction</code> to your wallet, which you approve yourself.</p>
+<p><b>What it does:</b> <code>approve(spender = your own address, amount = 0)</code>
+on the current SQK token. It moves no tokens and grants no allowance to any third party.
+This is the transaction the Squeekchain Genesis <b>Tester</b> badge requires:
+“send a transaction to any Squeekchain contract”.</p>
+<ul>
+  <li>Chain: Sepolia (11155111)</li>
+  <li>From: <code id="fromAddr">0x52369c283121b48e96a53277a18a49664b94caae</code></li>
+  <li>To (SQK token, current deployment): <code>0xd78a3956cf63164d1fa1c622ad3c66623162fa1e</code></li>
+  <li>Value: <code>0 ETH</code> — gas only</li>
+  <li>Data: <code>0x095ea7b300000000000000000000000052369c283121b48e96a53277a18a49664b94caae0000000000000000000000000000000000000000000000000000000000000000</code></li>
+  <li>Decoded: <code>095ea7b3</code> = approve · spender = your own address ·
+  amount = 0</li>
+</ul>
+<p class="warn">Before signing, check the wallet popup: From must be
+0x5236…CAAE, To must be 0xd78a…Fa1e, value 0, and the data must start with
+0x095ea7b3 and contain your own address. If anything differs, Reject.</p>
+<button id="connectBtn">1. Connect wallet</button>
+<button id="sendBtn" disabled>2. Send Ping</button>
+<div id="status">Not connected.</div>
+<script>
+const EXPECTED_FROM = "0x52369c283121b48e96a53277a18a49664b94caae";
+const TOKEN = "0xd78a3956cf63164d1fa1c622ad3c66623162fa1e";
+const DATA = "0x095ea7b300000000000000000000000052369c283121b48e96a53277a18a49664b94caae0000000000000000000000000000000000000000000000000000000000000000";
+const SEPOLIA_HEX = "0xaa36a7";
+const statusEl = document.getElementById("status");
+let account = null;
+function setStatus(t) { statusEl.textContent = t; }
+document.getElementById("connectBtn").onclick = async () => {
+  if (!window.ethereum) { setStatus("No wallet extension found in this browser. Open this file in a browser where Rabby is installed."); return; }
+  try {
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    account = accounts[0];
+    const chainId = await window.ethereum.request({ method: "eth_chainId" });
+    setStatus("Connected: " + account + "\nChain: " + chainId +
+      (account.toLowerCase() !== EXPECTED_FROM.toLowerCase() ? "\nWARNING: connected account is NOT the Genesis-linked wallet 0x5236...CAAE. Switch accounts in Rabby before sending, or the Tester badge will not count." : "\nAccount matches the Genesis-linked wallet.") +
+      (chainId !== SEPOLIA_HEX ? "\nWARNING: not on Sepolia. Switch network to Sepolia in Rabby before sending." : "\nNetwork is Sepolia."));
+    document.getElementById("sendBtn").disabled = false;
+  } catch (e) { setStatus("Connect failed: " + (e && e.message ? e.message : e)); }
+};
+document.getElementById("sendBtn").onclick = async () => {
+  if (!account) { setStatus("Connect first."); return; }
+  if (account.toLowerCase() !== EXPECTED_FROM.toLowerCase()) {
+    setStatus("STOP: connected account is not 0x5236...CAAE. Switch accounts in Rabby first.");
+    return;
+  }
+  const chainId = await window.ethereum.request({ method: "eth_chainId" });
+  if (chainId !== SEPOLIA_HEX) {
+    try {
+      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: SEPOLIA_HEX }] });
+    } catch (e) { setStatus("Please switch to Sepolia in Rabby first, then press Send Ping again."); return; }
+  }
+  try {
+    const hash = await window.ethereum.request({
+      method: "eth_sendTransaction",
+      params: [{ from: account, to: TOKEN, value: "0x0", data: DATA }]
+    });
+    setStatus("Sent! Tx hash: " + hash + "\nhttps://sepolia.etherscan.io/tx/" + hash);
+  } catch (e) { setStatus("Not sent: " + (e && e.message ? e.message : e)); }
+};
+</script>
+</body>
+</html>
